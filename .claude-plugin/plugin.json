@@ -1,7 +1,33 @@
 {
   "name": "ritmo-uso",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Ritmo de uso de los límites de 5 horas y semanal: % esperado, %/hora necesario e indicadores de sobrado/adelantado. Sin tokens.",
   "types": "./types/index.d.ts",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "horaInicio": {
+      "type": "number",
+      "title": "Hora de inicio de tu horario activo",
+      "description": "Hora local (0-23) en que empiezas a usar Claude. El ritmo semanal solo cuenta tus horas activas.",
+      "default": 9
+    },
+    "horaFin": {
+      "type": "number",
+      "title": "Hora de fin de tu horario activo",
+      "description": "Hora local (1-24) en que terminas. Si es menor que la de inicio, el horario cruza la medianoche. 0 a 24 = todo el día.",
+      "default": 24
+    },
+    "tolerancia": {
+      "type": "number",
+      "title": "Tolerancia (puntos)",
+      "description": "Diferencia entre usado y esperado que todavía cuenta como 'en ritmo'.",
+      "default": 5
+    },
+    "alertas": {
+      "type": "boolean",
+      "title": "Alertas",
+      "description": "Avisos cuando una ventana está por cerrar con % sin usar o cuando vas a topar antes del reinicio.",
+      "default": true
+    }
+  }
 }
