@@ -1,6 +1,6 @@
 {
   "name": "ritmo-uso",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ritmo de uso de los límites de 5 horas y semanal: % esperado, %/hora necesario e indicadores de sobrado/adelantado. Sin tokens.",
   "types": "./types/index.d.ts",
   "license": "MIT"

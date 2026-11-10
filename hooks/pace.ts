@@ -1,5 +1,5 @@
 // Cálculo puro del ritmo de uso. Sin llamadas al modelo: solo aritmética.
-import type { Limit, Snap } from '../types'
+import type { Calib, Limit, Snap } from '../types'
 
 export type Kind = 'five_hour' | 'seven_day'
 export type Status = 'sobrado' | 'en-ritmo' | 'adelantado' | 'agotado'
@@ -162,7 +162,7 @@ export const STATUS_TEXT: Record<Status, string> = {
 }
 
 /** Línea compacta para la barra de estado. */
-export function statusLine(paces: Pace[]): string {
+export function statusLine(paces: Pace[], plan?: WindowsPlan | null): string {
   return paces
     .map(p => {
       const name = p.kind === 'five_hour' ? '5h' : 'sem'
@@ -170,8 +170,95 @@ export function statusLine(paces: Pace[]): string {
       return (
         `${STATUS_ICON[p.status]} ${name} ${p.used.toFixed(0)}%/${p.expected.toFixed(0)}% ` +
         `(${signed(p.margin)}) · ${slot.label} ${Math.max(0, slot.left).toFixed(1)}% libre ` +
-        `· ↻${fmtDur(p.remH)}`
+        `· ↻${fmtDur(p.remH)}` +
+        (p.kind === 'seven_day' && plan ? ` · ≈${plan.needed.toFixed(1)}×5h` : '')
       )
     })
     .join('  |  ')
+}
+
+// ── Equivalencia ventana de 5h ↔ límite semanal ─────────────────────────────
+
+
+export const EMPTY_CALIB: Calib = { sumFive: 0, sumWeek: 0, cur: null }
+/** Puntos del 5h que hay que ver subir antes de confiar en la proporción. */
+const MIN_FIVE_POINTS = 10
+/** Al pasar de esto se reduce a la mitad, para que pesen más las semanas recientes. */
+const DECAY_AT = 600
+
+function fold(c: Calib): Calib {
+  const w = c.cur
+  if (!w) return c
+  const dFive = w.fiveLast - w.five0
+  const dWeek = w.weekLast - w.week0
+  let sumFive = c.sumFive
+  let sumWeek = c.sumWeek
+  if (dFive > 0 && dWeek >= 0) {
+    sumFive += dFive
+    sumWeek += dWeek
+  }
+  if (sumFive > DECAY_AT) {
+    sumFive /= 2
+    sumWeek /= 2
+  }
+  return { sumFive, sumWeek, cur: null }
+}
+
+/** Mete una lectura (5h + semanal) en la calibración. */
+export function updateCalib(c: Calib, five: Limit, week: Limit): Calib {
+  if (!five.resetsAt || !week.resetsAt) return c
+  const w = c.cur
+  const sameWindow =
+    w !== null &&
+    w.fiveReset === five.resetsAt &&
+    w.weekReset === week.resetsAt &&
+    five.percentUsed >= w.fiveLast &&
+    week.percentUsed >= w.weekLast
+  if (sameWindow) {
+    return { ...c, cur: { ...w, fiveLast: five.percentUsed, weekLast: week.percentUsed } }
+  }
+  const base = fold(c)
+  return {
+    ...base,
+    cur: {
+      fiveReset: five.resetsAt,
+      weekReset: week.resetsAt,
+      five0: five.percentUsed,
+      week0: week.percentUsed,
+      fiveLast: five.percentUsed,
+      weekLast: week.percentUsed,
+    },
+  }
+}
+
+/** Semanal (%) por cada 1% del límite de 5h; null mientras se calibra. */
+export function weekPerFivePoint(c: Calib): { ratio: number | null; seenFive: number } {
+  const w = c.cur
+  const curFive = w ? Math.max(0, w.fiveLast - w.five0) : 0
+  const curWeek = w ? Math.max(0, w.weekLast - w.week0) : 0
+  const seenFive = c.sumFive + curFive
+  if (seenFive < MIN_FIVE_POINTS) return { ratio: null, seenFive }
+  return { ratio: (c.sumWeek + curWeek) / seenFive, seenFive }
+}
+
+export type WindowsPlan = {
+  /** % semanal que consume una ventana de 5h al 100%. */
+  perWindow: number
+  /** Ventanas completas que faltan para agotar el semanal. */
+  needed: number
+  /** Las que faltarían además de terminar la actual al 100%. */
+  afterCurrent: number
+  /** Ventanas que caben antes del reinicio semanal (contando la actual). */
+  available: number
+}
+
+export function windowsPlan(five: Pace | undefined, week: Pace, ratio: number): WindowsPlan | null {
+  if (ratio <= 0) return null
+  const perWindow = ratio * 100
+  const left = 100 - week.used
+  const currentLeft = five ? (100 - five.used) * ratio : 0
+  const afterCurrent = Math.max(0, (left - currentLeft) / perWindow)
+  const tail = five ? Math.max(0, week.remH - five.remH) : week.remH
+  const available = Math.floor(tail / 5) + (five ? 1 : 0)
+  return { perWindow, needed: left / perWindow, afterCurrent, available }
 }

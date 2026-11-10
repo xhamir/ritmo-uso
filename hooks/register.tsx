@@ -1,8 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Limit, Reading, Snap } from '../types'
+import type { Calib, Limit, Reading, Snap } from '../types'
 import {
+  EMPTY_CALIB,
   STATUS_ICON,
   STATUS_TEXT,
   fmtClock,
@@ -13,8 +14,11 @@ import {
   signed,
   slotKey,
   statusLine,
+  updateCalib,
+  weekPerFivePoint,
+  windowsPlan,
 } from './pace'
-import type { Pace } from './pace'
+import type { Pace, WindowsPlan } from './pace'
 
 const PANE = 'ritmo-uso'
 const TITLE = 'Ritmo de uso'
@@ -22,6 +26,14 @@ const TITLE = 'Ritmo de uso'
 const readingAtom = atom({ plugin: 'ritmo-uso', key: 'reading' } as const, null)
 const snapsAtom = atom({ plugin: 'ritmo-uso', key: 'snaps' } as const, [])
 const tickAtom = atom({ plugin: 'ritmo-uso', key: 'tick' } as const, 0)
+const calibAtom = atom({ plugin: 'ritmo-uso', key: 'calib' } as const, EMPTY_CALIB)
+
+function planFor(paces: Pace[], calib: Calib): WindowsPlan | null {
+  const week = paces.find(p => p.kind === 'seven_day')
+  const { ratio } = weekPerFivePoint(calib)
+  if (!week || ratio === null) return null
+  return windowsPlan(paces.find(p => p.kind === 'five_hour'), week, ratio)
+}
 
 type Api = EngineInterface
 
@@ -58,7 +70,8 @@ async function ensureSnaps($: Api, reading: Reading, now: number) {
 async function refreshStatus($: Api) {
   const now = await $.clock.now()
   const paces = computePaces(await read($, readingAtom), await read($, snapsAtom), now)
-  $.ui.status(paces.length ? statusLine(paces) : undefined)
+  const plan = planFor(paces, await read($, calibAtom))
+  $.ui.status(paces.length ? statusLine(paces, plan) : undefined)
 }
 
 async function ingest($: Api, limits: Limit[]) {
@@ -72,6 +85,13 @@ async function ingest($: Api, limits: Limit[]) {
   await update($, readingAtom, () => reading)
   await $.store.set('reading', reading)
   await ensureSnaps($, reading, now)
+  const five = relevant.find(l => l.kind === 'five_hour')
+  const week = relevant.find(l => l.kind === 'seven_day')
+  if (five && week) {
+    const calib = updateCalib(await read($, calibAtom), five, week)
+    await update($, calibAtom, () => calib)
+    await $.store.set('calib', calib)
+  }
   await refreshStatus($)
 }
 
@@ -94,6 +114,10 @@ export const register: Register = on => {
     const storedSnaps = (await $.store.get('snaps')) as Snap[] | undefined
     if (Array.isArray(storedSnaps)) await update($, snapsAtom, () => storedSnaps)
     if (stored && Array.isArray(stored.limits)) await update($, readingAtom, () => stored)
+    const storedCalib = (await $.store.get('calib')) as Calib | undefined
+    if (storedCalib && typeof storedCalib.sumFive === 'number') {
+      await update($, calibAtom, () => storedCalib)
+    }
 
     await $.command.register({
       name: 'ritmo',
@@ -135,6 +159,9 @@ export const register: Register = on => {
     const snaps = await read($, snapsAtom)
     const now = await $.clock.now()
     const paces = computePaces(reading, snaps, now)
+    const calib = await read($, calibAtom)
+    const { ratio, seenFive } = weekPerFivePoint(calib)
+    const plan = planFor(paces, calib)
 
     if (paces.length === 0) {
       return (
@@ -186,6 +213,27 @@ export const register: Register = on => {
                   {s.left >= 0 ? `te quedan ${pct(s.left)}` : `te pasaste ${pct(-s.left)}`}
                 </Text>
               </Text>
+              {isWeek && plan && (
+                <Text>
+                  1 ventana de 5h al 100% ≈ {pct(plan.perWindow)} semanal → te faltan{' '}
+                  <Text bold>≈{plan.needed.toFixed(1)} ventanas al 100%</Text> (
+                  {plan.afterCurrent.toFixed(1)} más si terminas la actual) · caben{' '}
+                  <Text color={plan.available >= plan.needed ? 'success' : 'error'}>
+                    {plan.available}
+                  </Text>{' '}
+                  antes del reinicio
+                </Text>
+              )}
+              {isWeek && !plan && (
+                <Text dimColor>
+                  Calibrando equivalencia 5h↔semanal: {seenFive.toFixed(0)}/10 pts del 5h observados
+                </Text>
+              )}
+              {!isWeek && ratio !== null && (
+                <Text dimColor>
+                  Lo que queda de esta ventana ({pct(100 - p.used)}) ≈ {pct((100 - p.used) * ratio)} del semanal
+                </Text>
+              )}
               {p.avgPerH !== null && (
                 <Text dimColor>
                   Tu promedio: {pct(p.avgPerH)}/h →{' '}
